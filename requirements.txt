@@ -1,0 +1,6 @@
+feedparser
+google-generativeai
+sendgrid
+requests
+beautifulsoup4
+lxml
