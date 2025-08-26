@@ -59,7 +59,7 @@ def summarize_text_with_gemini(text):
         return "記事の本文を取得できませんでした。"
     try:
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-pro')
+        model = genai.GenerativeModel('gemini-1.0-pro')
         prompt = f"以下のニュース記事を日本語で{MAX_SUMMARY_LENGTH}字程度の箇条書きで要約してください。重要なポイントを3つに絞ってください。\n\n---\n{text[:8000]}" # 長すぎるテキストは切り詰める
         response = model.generate_content(prompt)
         return response.text
