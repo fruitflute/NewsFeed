@@ -7,6 +7,7 @@ from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail
 from datetime import datetime
 import time
+import re
 
 # --- 設定 ---
 # RSSフィードのURL
@@ -54,18 +55,80 @@ def get_article_text(url):
         return ""
 
 def summarize_text_with_gemini(text):
-    """Gemini APIを使ってテキストを要約する"""
+    """Gemini APIを使ってテキストを要約する（リトライとレート制限対応付き）"""
     if not text:
         return "記事の本文を取得できませんでした。"
-    try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-2.5-pro')
-        prompt = f"以下のニュース記事を日本語で{MAX_SUMMARY_LENGTH}字程度の箇条書きで要約してください。重要なポイントを3つに絞ってください。\n\n---\n{text[:8000]}" # 長すぎるテキストは切り詰める
-        response = model.generate_content(prompt)
-        return response.text
-    except Exception as e:
-        print(f"Gemini APIエラー: {e}")
-        return "要約の生成中にエラーが発生しました。"
+
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel('gemini-2.5-flash') # 無料利用枠でより多くのリクエストを処理できる可能性があるモデルに変更
+    prompt = f"以下のニュース記事を日本語で{MAX_SUMMARY_LENGTH}字程度の箇条書きで要約してください。重要なポイントを3つに絞ってください。\n\n---\n{text[:8000]}"
+
+    retries = 3
+    backoff_factor = 5  # 秒
+
+    for i in range(retries):
+        try:
+            response = model.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.7, # 創造性を少し持たせる
+                ),
+                safety_settings=[
+                    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+                ]
+            )
+            # response.text の前に response.parts が存在するか確認
+            if response.parts:
+                return response.text
+            else:
+                # レスポンスが空の場合のハンドリング
+                try:
+                    finish_reason = response.prompt_feedback.block_reason
+                except Exception:
+                    finish_reason = "不明"
+                error_message = f"Geminiから有効な応答がありませんでした。理由: {finish_reason}"
+                print(error_message)
+                if i < retries - 1:
+                    time.sleep(backoff_factor * (2 ** i))
+                    continue
+                else:
+                    return f"要約の生成に失敗しました: {error_message}"
+
+        except Exception as e:
+            error_message = f"Gemini APIエラー: {e}"
+            print(error_message)
+            # 429 (ResourceExhausted) エラーの場合、待機時間を長くする
+            if "429" in str(e):
+                 # エラーメッセージからretry_delayを抽出する試み
+                try:
+                    match = re.search(r"retry_delay {\s*seconds: (\d+)\s*}", str(e))
+                    if match:
+                        wait_time = int(match.group(1)) + 1 # 1秒追加
+                        print(f"レート制限超過。{wait_time}秒待機します...")
+                        time.sleep(wait_time)
+                    else:
+                        # 固定時間待機
+                        wait_time = 60
+                        print(f"レート制限超過。{wait_time}秒待機します...")
+                        time.sleep(wait_time)
+                except Exception:
+                    wait_time = 60
+                    print(f"レート制限超過。{wait_time}秒待機します...")
+                    time.sleep(wait_time)
+
+            # その他のエラーの場合は通常のバックオフ
+            elif i < retries - 1:
+                wait_time = backoff_factor * (2 ** i)
+                print(f"エラーのため{wait_time}秒待機して再試行します...")
+                time.sleep(wait_time)
+            else:
+                return f"要約の生成に失敗しました: {error_message}"
+
+    return "要約の生成に失敗しました（リトライ上限超過）。"
+
 
 def build_html_content(summaries):
     """要約リストからHTMLメールの本文を作成する"""
@@ -117,7 +180,6 @@ def main():
             print(f"処理中の記事: {entry.title}")
             
             article_text = get_article_text(entry.link)
-            time.sleep(1) # サーバーへの負荷を軽減
             
             summary = summarize_text_with_gemini(article_text)
             
@@ -127,7 +189,10 @@ def main():
                 "link": entry.link,
                 "summary": summary
             })
-            time.sleep(1) # APIへの負荷を軽減
+            # 1分あたりのリクエスト数を考慮し、各記事の処理後に十分な待機時間を設ける
+            print("次の記事の処理まで31秒待機します...")
+            time.sleep(31)
+
 
     if all_summaries:
         print("HTMLメールを作成中...")
