@@ -75,7 +75,8 @@ def build_html_content(summaries):
     for item in summaries:
         html += f"<h2><a href='{item['link']}'>{item['title']}</a></h2>"
         html += f"<h4>{item['source']}</h4>"
-        html += f"<p>{item['summary'].replace('\n', '<br>')}</p>"
+        summary_with_br = item['summary'].replace('\n', '<br>')
+        html += f"<p>{summary_with_br}</p>"
         html += "<hr>"
         
     html += "</body></html>"
